@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <vector>
+#include <algorithm>
 
 #include <bgfx/bgfx.h>
 #include <bgfx/platform.h>
@@ -62,6 +63,8 @@ void* get_native_glfw_handle(GLFWwindow* window, int width, int height) {
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
+#define GLM_ENABLE_EXPERIMENTAL
+#include <glm/ext.hpp>
 
 #include "imgui_impl_bgfx.h"
 #include "imgui_impl_glfw.h"

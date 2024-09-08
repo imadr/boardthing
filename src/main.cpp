@@ -21,6 +21,7 @@ const bgfx::VertexLayout PosTexcoordVertex::Layout{
 
 struct Quad {
     glm::vec3 position = glm::vec3(0, 0, 0);
+    glm::vec2 scale = glm::vec2(1, 1);
     float aspect_ratio = 1.0;
     std::string filename;
     glm::vec2 texture_size = glm::vec2(0, 0);
@@ -30,6 +31,10 @@ struct Quad {
     bool mirror_h = false;
     bool mirror_v = false;
     bool deleted = false;
+    unsigned char* cpu_texture_data;
+    int texture_width;
+    int texture_height;
+    int z_index = 0;
 };
 
 struct Context {
@@ -48,6 +53,7 @@ struct Context {
     float camera_zoom = 3.0;
 
     bool erase_mode = false;
+    bool erasing = false;
 
     bgfx::VertexBufferHandle vertex_buffer_handle;
     bgfx::IndexBufferHandle index_buffer_handle;
@@ -88,16 +94,21 @@ void mouse_button_callback(GLFWwindow* window, int button, int action, int mods)
             double xpos, ypos;
             glfwGetCursorPos(ctx.window, &xpos, &ypos);
 
-            if (ctx.hovered_quad > -1) {
-                ctx.selected_quad = ctx.hovered_quad;
-                ctx.dragged_quad = ctx.hovered_quad;
-                ctx.drag_start_mouse_pos = glm::vec2(xpos, ypos);
-                ctx.drag_start_quad_pos = ctx.quads[ctx.hovered_quad].position;
+            if (ctx.erase_mode) {
+                ctx.erasing = true;
             } else {
-                ctx.selected_quad = -1;
+                if (ctx.hovered_quad > -1) {
+                    ctx.selected_quad = ctx.hovered_quad;
+                    ctx.dragged_quad = ctx.hovered_quad;
+                    ctx.drag_start_mouse_pos = glm::vec2(xpos, ypos);
+                    ctx.drag_start_quad_pos = ctx.quads[ctx.hovered_quad].position;
+                } else {
+                    ctx.selected_quad = -1;
+                }
             }
         } else if (action == GLFW_RELEASE) {
             ctx.dragged_quad = -1;
+            ctx.erasing = false;
         }
     }
 }
@@ -124,21 +135,23 @@ std::function<void()> main_loop = []() {
                                 1.0f * ctx.camera_zoom, 0.0f, 100.0f);
 
     int i = 0;
+    ctx.hovered_quad = -1;
+    float hovered_z = 1;
+
+    std::sort(ctx.quads.begin(), ctx.quads.end(),
+              [](const Quad& a, const Quad& b) { return a.z_index < b.z_index; });
+
     for (auto& quad : ctx.quads) {
+        quad.position.z = -quad.z_index;
+
         if (quad.deleted) continue;
         glm::mat4 model = glm::mat4(1.0);
         model = glm::translate(model, quad.position);
-        float scale_x = 1.0;
-        float scale_y = 1.0;
-        if (i == 0) {
-            scale_x = 2.0;
-            scale_y = 2.0;
-        }
         model = glm::scale(
             model,
             glm::vec3((quad.mirror_h ? -1.0 : 1.0) *
-                          (float(quad.texture_size.x) / float(quad.texture_size.y)) * scale_x,
-                      (quad.mirror_v ? -1.0 : 1.0) * scale_y, 1.0));
+                          (float(quad.texture_size.x) / float(quad.texture_size.y)) * quad.scale.x,
+                      (quad.mirror_v ? -1.0 : 1.0) * quad.scale.y, 1.0));
         glm::vec4 corners[4] = {
             glm::vec4(-1.0f, -1.0f, 0.0f, 1.0f), glm::vec4(1.0f, -1.0f, 0.0f, 1.0f),
             glm::vec4(-1.0f, 1.0f, 0.0f, 1.0f), glm::vec4(1.0f, 1.0f, 0.0f, 1.0f)};
@@ -164,8 +177,11 @@ std::function<void()> main_loop = []() {
         }
 
         bgfx::setViewFrameBuffer(VIEW_RENDER, ctx.framebuffer_handle);
-        bgfx::setViewClear(VIEW_RENDER, BGFX_CLEAR_COLOR | BGFX_CLEAR_DEPTH, 0x303030ff, 1.0f, 0);
-        bgfx::setState(BGFX_STATE_WRITE_RGB | BGFX_STATE_BLEND_ALPHA);
+        bgfx::setViewClear(VIEW_RENDER, BGFX_CLEAR_COLOR, 0x303030ff, 1.0f, 0);
+        bgfx::setState(
+            BGFX_STATE_WRITE_RGB |
+            BGFX_STATE_BLEND_FUNC(BGFX_STATE_BLEND_SRC_ALPHA, BGFX_STATE_BLEND_INV_SRC_ALPHA) |
+            BGFX_STATE_BLEND_ALPHA);
         bgfx::setViewRect(VIEW_RENDER, 0, 0, uint16_t(ctx.window_width),
                           uint16_t(ctx.window_height));
         bgfx::setViewTransform(VIEW_RENDER, glm::value_ptr(ctx.view), glm::value_ptr(proj));
@@ -177,7 +193,10 @@ std::function<void()> main_loop = []() {
 
         if ((mouse_pos_glm.x >= quad.min_corner.x && mouse_pos_glm.x <= quad.max_corner.x &&
              mouse_pos_glm.y >= quad.min_corner.y && mouse_pos_glm.y <= quad.max_corner.y)) {
-            ctx.hovered_quad = i;
+            if (quad.position.z < hovered_z) {
+                ctx.hovered_quad = i;
+                hovered_z = quad.position.z;
+            }
         }
         i++;
     }
@@ -205,9 +224,20 @@ std::function<void()> main_loop = []() {
     ImGui_Implbgfx_NewFrame();
     ImGui::NewFrame();
 
-    ImGui::SetNextWindowSize(ImVec2(300, 150));
+    ImGui::SetNextWindowSize(ImVec2(600, 300));
+    ImGui::SetNextWindowPos(ImVec2(10, 10));
     ImGui::Begin("Hello world!");
+
     ImGui::Text("Welcome to boardthing");
+
+    int x = 0;
+    for (auto& quad : ctx.quads) {
+        ImGui::Text((std::to_string(x) + " quad, z_index: " + std::to_string(quad.z_index) +
+                     " , pos: " + glm::to_string(quad.position))
+                        .c_str());
+        x++;
+    }
+
     if (ImGui::Button("Save")) {
         ctx.readback_next_frame = true;
     }
@@ -234,6 +264,21 @@ std::function<void()> main_loop = []() {
                                   ctx.quads[ctx.selected_quad].max_corner.y + 5),
                            IM_COL32(0, 255, 0, 255), 0.0f, 0, 3.0f);
 
+        ImVec2 corners[4] = {ImVec2(ctx.quads[ctx.selected_quad].min_corner.x,
+                                    ctx.quads[ctx.selected_quad].min_corner.y),
+                             ImVec2(ctx.quads[ctx.selected_quad].max_corner.x,
+                                    ctx.quads[ctx.selected_quad].min_corner.y),
+                             ImVec2(ctx.quads[ctx.selected_quad].min_corner.x,
+                                    ctx.quads[ctx.selected_quad].max_corner.y),
+                             ImVec2(ctx.quads[ctx.selected_quad].max_corner.x,
+                                    ctx.quads[ctx.selected_quad].max_corner.y)};
+
+        for (int i = 0; i < 4; ++i) {
+            draw_list->AddRectFilled(ImVec2(corners[i].x - 10, corners[i].y - 10),
+                                     ImVec2(corners[i].x + 10, corners[i].y + 10),
+                                     IM_COL32(255, 0, 0, 255));
+        }
+
         ImGui::SetNextWindowPos(ImVec2(ctx.quads[ctx.selected_quad].min_corner.x,
                                        ctx.quads[ctx.selected_quad].min_corner.y - 40),
                                 ImGuiCond_Always);
@@ -252,6 +297,22 @@ std::function<void()> main_loop = []() {
         ImGui::SameLine();
         if (ImGui::Button("Mirror H")) {
             ctx.quads[ctx.selected_quad].mirror_h = !ctx.quads[ctx.selected_quad].mirror_h;
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("↑")) {
+            if (ctx.selected_quad < ctx.quads.size() - 1) {
+                ctx.quads[ctx.selected_quad].z_index++;
+                ctx.quads[ctx.selected_quad + 1].z_index--;
+                ctx.selected_quad++;
+            }
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("↓")) {
+            if (ctx.selected_quad > 0) {
+                ctx.quads[ctx.selected_quad].z_index--;
+                ctx.quads[ctx.selected_quad - 1].z_index++;
+                ctx.selected_quad--;
+            }
         }
         ImGui::SameLine();
         ImGui::Button("Rotate");
@@ -281,10 +342,6 @@ void emscripten_main_loop_wrapper() {
     main_loop();
 }
 
-// EMSCRIPTEN_KEEPALIVE
-// void resize_callback(Context* ctx) {
-// }
-
 int main() {
     if (!glfwInit()) {
         printf("[error] failed to initialize GLFW\n");
@@ -299,7 +356,7 @@ int main() {
         return -1;
     }
     glfwMakeContextCurrent(ctx.window);
-    // glfwSwapInterval(1);
+    glfwSwapInterval(1);
 
     glfwSetCursorPosCallback(ctx.window, cursor_position_callback);
     glfwSetMouseButtonCallback(ctx.window, mouse_button_callback);
@@ -334,6 +391,13 @@ int main() {
     ImGui_ImplGlfw_InitForOther(ctx.window, true);
     ImGui_Implbgfx_Init(VIEW_IMGUI);
 
+    ImGuiIO& io = ImGui::GetIO();
+    static const ImWchar glyph_ranges[] = {0x0020, 0x00FF, 0x2190, 0x21FF, 0};
+    ImFontConfig font_config;
+    font_config.GlyphRanges = glyph_ranges;
+    io.Fonts->AddFontFromFileTTF("assets/Inter_18pt-Regular.ttf", 18, &font_config);
+    io.Fonts->Build();
+
     bgfx::setViewName(VIEW_RENDER, "VIEW_RENDER");
     bgfx::setViewName(VIEW_COPY_TO_FRAMEBUFFER, "VIEW_COPY_TO_FRAMEBUFFER");
     bgfx::setViewName(VIEW_BLIT, "VIEW_BLIT");
@@ -359,13 +423,20 @@ int main() {
                            glm::vec3(0.0f, 1.0f, 0.0f));
     ctx.aspect_ratio = float(ctx.window_width) / float(ctx.window_height);
 
-    ctx.quads.push_back(Quad{glm::vec3(1, 0, 0), 1.0, "assets/guts.jpg", glm::vec2(0, 0),
-                             BGFX_INVALID_HANDLE, glm::vec2(0, 0), glm::vec2(1, 1), false, false,
-                             false});
+    ctx.quads.push_back(Quad{.position = glm::vec3(1, 0, 0),
+                             .aspect_ratio = 1.0,
+                             .filename = "assets/guts.png",
+                             .z_index = 0});
 
-    ctx.quads.push_back(Quad{glm::vec3(0, 0, 0), 1.0, "assets/logo.png", glm::vec2(0, 0),
-                             BGFX_INVALID_HANDLE, glm::vec2(0, 0), glm::vec2(1, 1), false, false,
-                             false});
+    ctx.quads.push_back(Quad{.position = glm::vec3(0, 0, 0),
+                             .aspect_ratio = 1.0,
+                             .filename = "assets/logo.png",
+                             .z_index = 1});
+
+    ctx.quads.push_back(Quad{.position = glm::vec3(0, 0, 0),
+                             .aspect_ratio = 1.0,
+                             .filename = "assets/wordart.png",
+                             .z_index = 2});
 
     ctx.uniform_handle = bgfx::createUniform("texture_uniform", bgfx::UniformType::Sampler);
 
@@ -379,9 +450,14 @@ int main() {
             return -1;
         }
 
+        quad.cpu_texture_data = data;
+        quad.texture_width = texture_width;
+        quad.texture_height = texture_height;
         bgfx::TextureHandle texture_handle = bgfx::createTexture2D(
-            texture_width, texture_height, false, 1, bgfx::TextureFormat::RGBA8, 0,
-            bgfx::makeRef(data, texture_width * texture_height * 4));
+            texture_width, texture_height, false, 1, bgfx::TextureFormat::RGBA8, 0, NULL);
+        bgfx::updateTexture2D(
+            texture_handle, 0, 0, 0, 0, texture_width, texture_height,
+            bgfx::copy(quad.cpu_texture_data, texture_width * texture_height * 4));
         quad.texture_handle = texture_handle;
         quad.texture_size = glm::vec2(texture_width, texture_height);
     }
@@ -389,8 +465,11 @@ int main() {
     ctx.render_texture_handle =
         bgfx::createTexture2D(ctx.window_width, ctx.window_height, false, 1,
                               bgfx::TextureFormat::RGBA8, BGFX_TEXTURE_RT, NULL);
-    ctx.framebuffer_handle = bgfx::createFrameBuffer(1, &ctx.render_texture_handle, true);
 
+    bgfx::TextureHandle framebuffer_textures[] = {ctx.render_texture_handle};
+
+    ctx.framebuffer_handle =
+        bgfx::createFrameBuffer(BX_COUNTOF(framebuffer_textures), framebuffer_textures, true);
     ctx.readback_texture_handle = bgfx::createTexture2D(
         ctx.window_width, ctx.window_height, false, 1, bgfx::TextureFormat::RGBA8,
         BGFX_TEXTURE_READ_BACK | BGFX_TEXTURE_BLIT_DST, NULL);

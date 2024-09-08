@@ -5,6 +5,7 @@ project(boardthing)
 if (CMAKE_SYSTEM_NAME STREQUAL "Linux")
     add_compile_definitions(PLATFORM_LINUX)
 elseif (CMAKE_SYSTEM_NAME STREQUAL "Windows")
+    add_compile_options("/utf-8")
     add_compile_definitions(PLATFORM_WINDOWS)
 endif()
 
