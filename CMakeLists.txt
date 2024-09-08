@@ -20,6 +20,33 @@ if(EMSCRIPTEN)
 endif()
 
 
+set(SHADERC_PATH "" CACHE FILEPATH "Path to shaderc executable")
+set(BGFX_INCLUDE_PATH "" CACHE PATH "Path to BGFX include directory")
+set(BGFX_VARYING_DEF_PATH "" CACHE FILEPATH "Path to BGFX varying.def.sc file")
+
+function(compile_shader SHADER_NAME SHADER_TYPE)
+    set(SHADER_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/src/${SHADER_NAME}.glsl")
+    set(SHADER_OUTPUT "${CMAKE_CURRENT_SOURCE_DIR}/src/${SHADER_NAME}.bin.h")
+
+    add_custom_target(
+        compile_${SHADER_NAME}
+        COMMAND "${SHADERC_PATH}"
+        ARGS -f ${SHADER_SOURCE}
+             -o ${SHADER_OUTPUT}
+             --type ${SHADER_TYPE}
+             --profile 320_es
+             -i "${BGFX_INCLUDE_PATH}"
+             --varyingdef "${BGFX_VARYING_DEF_PATH}"
+             --bin2c
+        COMMENT "Compiling shader ${SHADER_NAME}"
+        DEPENDS ${SHADER_SOURCE}
+    )
+    add_dependencies(boardthing compile_${SHADER_NAME})
+
+    set_source_files_properties(${SHADER_OUTPUT} PROPERTIES GENERATED TRUE)
+    target_sources(boardthing PRIVATE ${SHADER_OUTPUT})
+endfunction()
+
 set(BGFX_BUILD_EXAMPLES OFF)
 add_subdirectory(ext/bgfx.cmake)
 set(BGFX_BUILD_EXAMPLES OFF)
@@ -68,3 +95,6 @@ if(EMSCRIPTEN)
     set(SOURCE_MAP_BASE "http://localhost:8000/")
     set_target_properties(boardthing PROPERTIES LINK_FLAGS "-s USE_PTHREADS=0 -s USE_GLFW=3 -s WASM=1 -s ALLOW_MEMORY_GROWTH=1 -s NO_EXIT_RUNTIME=1 -s ASSERTIONS=1 -gsource-map --source-map-base=${SOURCE_MAP_BASE} --preload-file ${CMAKE_SOURCE_DIR}/assets@/assets")
 endif()
+
+compile_shader(quad_vertex vertex)
+compile_shader(quad_fragment fragment)
